@@ -1,6 +1,12 @@
 package model
 
 object OperationType extends Enumeration {
-  //  val ALL_FIELDS = Value
-  val NOT_NULL, IS_NULL , GREATER_THAN_INCLUSIVE , LESS_THAN_INCLUSIVE = Value
+  val NOT_NULL,
+  IS_NULL,
+  IS_BLANK,
+  GREATER_THAN_INCLUSIVE,
+  LESS_THAN_INCLUSIVE,
+  IS_EQUAL_TO,
+  IS_NOT_EQUAL_TO
+  = Value
 }

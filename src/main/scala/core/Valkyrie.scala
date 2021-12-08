@@ -1,21 +1,25 @@
 package core
 
-import core.Valkyrie.Operations
-import interfaces.{FinalBuilder, PreBuilder}
-import model.{OperationType, Validation}
-//import processor.{JsonInputProcessor, Operations}
+import interfaces.StepBuilder
+import model.{OperationType, Validation, ValkyrieProcessor}
+import processor.JsonProcessor
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
+
 /**
- * Null check
- * Range check
- * Presence check (?)
+ * date comparison
+ *
  * Relative comparison check (a can't be greater than b) // custom comparator
+ * collections min elements
+ *
+ * validate against object
+ *
  * Rule Optimizer
  * First process all presence checks (contains op)
  * Then run rules on group by fields
+ *
  * Must haves (actions when they don't)
  * Could haves (separate actions when they don't)
  * Flink - failure rate actions (email, alert, crash)
@@ -23,86 +27,69 @@ import scala.collection.mutable.ListBuffer
  * Flink - determine output sink based on outcome
  */
 
-/**
- * valk
- * .pseudoBuild // select between json and object validations
- * .notnull("a","b")
- * .isNull("c","d")
- * .isBetween("e","1","2") // isGreaterThan , isLessThan
- * .build
- *
- * Build will trigger rule optimizer .. How will you handle for all field validations
- *
- * extractors and evaluators abstract json vs object handling and prevent code duplication ..
- *
- * .filter( valk.eval(_) )
- *
- * input [JsonString/Object] --> valkRuleEngine will evaluate the input --> will emit boolean value
- * short ckt on first breach of validation
- * .
- */
+// TODO: add logging
 
 object Valkyrie {
+
   //  def usingClass[T] = new GenericCore
+  //  def byteArray[T] = new ByteArrayProcessor
+  //  def json: StepBuilder[JsonProcessor] /*with InputProcessor[String,AnyRef]*/ = new JsonProcessor()
 
-  def json: PreBuilder = new Operations
+  def json: StepBuilder = new Valkyrie(ValkyrieProcessor.JSON)
 
-  class Operations extends PreBuilder with FinalBuilder {
-    private[core] val fieldValidationMap = new mutable.HashMap[String, ListBuffer[Validation]]()
-    private[core] val allFieldValidations = new mutable.HashSet[Validation]()
-
-    def notNull(fieldNames: String*): FinalBuilder = {
-      if (fieldNames.isEmpty || (fieldNames.size == 1 & fieldNames.head.trim.isEmpty))
-        allFieldValidations.add(Validation(OperationType.NOT_NULL))
-      else
-        fieldNames.foreach(
-          name => fieldValidationMap.getOrElseUpdate(name, new mutable.ListBuffer[Validation]()) += Validation(OperationType.NOT_NULL))
-
-      this
-    }
-
-    def isNull(fieldNames: String*): FinalBuilder = {
-      if (fieldNames.isEmpty || (fieldNames.size == 1 & fieldNames.head.trim.isEmpty))
-        allFieldValidations.add(Validation(OperationType.IS_NULL))
-      else
-        fieldNames.foreach(
-          name => fieldValidationMap.getOrElseUpdate(name, new mutable.ListBuffer[Validation]()) += Validation(OperationType.IS_NULL))
-
-      this
-    }
-
-    def isBetweenRange(lowerInclusiveRange: String, upperInclusiveRange: String, fieldNames: String*): FinalBuilder = {
-      if (fieldNames.isEmpty || (fieldNames.size == 1 & fieldNames.head.trim.isEmpty)) {
-        allFieldValidations.add(Validation(OperationType.LESS_THAN_INCLUSIVE, lowerInclusiveRange))
-        allFieldValidations.add(Validation(OperationType.GREATER_THAN_INCLUSIVE, upperInclusiveRange))
-      }
-      else
-        fieldNames.foreach(name => {
-          fieldValidationMap.getOrElseUpdate(name, new mutable.ListBuffer[Validation]()) += Validation(OperationType.LESS_THAN_INCLUSIVE, lowerInclusiveRange)
-          fieldValidationMap.getOrElseUpdate(name, new mutable.ListBuffer[Validation]()) += Validation(OperationType.GREATER_THAN_INCLUSIVE, upperInclusiveRange)
-        })
-
-      this
-    }
-
-    /*def recorder = {
-
-    }*/
-
-    override def build: Valkyrie = {
-      new Valkyrie(this)
-    }
-  }
-
+  def byteArray: StepBuilder = new Valkyrie(ValkyrieProcessor.BYTE_ARRAY)
 
 }
 
-class Valkyrie private (operations: Operations) {
-  def evaluate(string: String): Boolean = {
+class Valkyrie private(valkyrieProcessor: ValkyrieProcessor.Value) extends StepBuilder {
 
-    println(operations.allFieldValidations)
-    println(operations.fieldValidationMap)
-    true
+  val fieldValidationMap = new mutable.HashMap[String, ListBuffer[Validation]]()
+  val globalValidations = new ListBuffer[Validation]()
+
+  def passJudgement(nodeValue: String)(validations: Seq[Validation]): Boolean = {
+    println(s"Judging value :: $nodeValue against ->  ${validations.mkString(",")}")
+    validations forall
+      (validation => validation.operationType
+      match {
+        case OperationType.NOT_NULL => nodeValue.nonEmpty
+        case OperationType.IS_NULL => nodeValue.equalsIgnoreCase("null")
+        case OperationType.IS_BLANK => nodeValue.isEmpty
+        case OperationType.GREATER_THAN_INCLUSIVE => nodeValue.compareTo(validation.parameter.head) <= 0
+        case OperationType.LESS_THAN_INCLUSIVE => nodeValue.compareTo(validation.parameter.head) >= 0
+        case OperationType.IS_EQUAL_TO => nodeValue.equals(validation.parameter.head)
+        case OperationType.IS_NOT_EQUAL_TO => !nodeValue.equals(validation.parameter.head)
+      })
+  }
+
+  private def recorder(validations: Validation*)(fieldNames: String*): Valkyrie = {
+    if (fieldNames.isEmpty || (fieldNames.size == 1 & fieldNames.head.trim.isEmpty))
+      globalValidations ++= validations
+    else
+      fieldNames foreach (fieldName => fieldValidationMap.getOrElseUpdate(fieldName, new mutable.ListBuffer[Validation]()) ++= validations)
+
+    this
+  }
+
+  // Methods in Step builder
+  def notNull(fieldNames: String*): Valkyrie = recorder(Validation(OperationType.NOT_NULL))(fieldNames: _*)
+
+  def isNull(fieldNames: String*): Valkyrie = recorder(Validation(OperationType.IS_NULL))(fieldNames: _*)
+
+  def isBlank(fieldNames: String*): Valkyrie = recorder(Validation(OperationType.IS_BLANK))(fieldNames: _*)
+
+  def isBetweenRange(lowerInclusiveRange: String, upperInclusiveRange: String, fieldNames: String*): Valkyrie =
+    recorder(Validation(OperationType.LESS_THAN_INCLUSIVE, lowerInclusiveRange), Validation(OperationType.GREATER_THAN_INCLUSIVE, upperInclusiveRange))(fieldNames: _*)
+
+  def isEqualTo(value: String, fieldName: String): Valkyrie = recorder(Validation(OperationType.IS_EQUAL_TO, value))(fieldName)
+
+  def isNotEqualTo(value: String, fieldName: String): Valkyrie = recorder(Validation(OperationType.IS_NOT_EQUAL_TO, value))(fieldName)
+  // Methods in Step builder
+
+
+  def build = valkyrieProcessor match {
+    case ValkyrieProcessor.JSON => new JsonProcessor(this)
+//    case ValkyrieProcessor.BYTE_ARRAY => new JsonProcessor(this)
   }
 }
+
 
