@@ -5,6 +5,8 @@ object OperationType extends Enumeration {
   IS_NULL,
   IS_BLANK,
   GREATER_THAN_INCLUSIVE,
-  LESS_THAN_INCLUSIVE
+  LESS_THAN_INCLUSIVE,
+  IS_EQUAL_TO,
+  IS_NOT_EQUAL_TO
   = Value
 }
