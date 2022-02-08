@@ -1,7 +1,7 @@
 package core
 
 import interfaces.StepBuilder
-import model.{OperationType, Validation, ValkyrieProcessor}
+import model.{Field, FieldValidationResult, ValidationType, ValidationRule, ValkyrieProcessor}
 import processor.JsonProcessor
 
 import scala.collection.mutable
@@ -43,53 +43,62 @@ object Valkyrie {
 
 class Valkyrie private(valkyrieProcessor: ValkyrieProcessor.Value) extends StepBuilder {
 
-  val fieldValidationMap = new mutable.HashMap[String, ListBuffer[Validation]]()
-  val globalValidations = new ListBuffer[Validation]()
+  val fieldValidationMap = new mutable.HashMap[String, ListBuffer[ValidationRule]]()
+  val globalValidations = new ListBuffer[ValidationRule]()
 
-  def passJudgement(nodeValue: String)(validations: Seq[Validation]): Boolean = {
-    println(s"Judging value :: $nodeValue against ->  ${validations.mkString(",")}")
-    validations forall
-      (validation => validation.operationType
-      match {
-        case OperationType.NOT_NULL => nodeValue.nonEmpty
-        case OperationType.IS_NULL => nodeValue.equalsIgnoreCase("null")
-        case OperationType.IS_BLANK => nodeValue.isEmpty
-        case OperationType.GREATER_THAN_INCLUSIVE => nodeValue.compareTo(validation.parameter.head) <= 0
-        case OperationType.LESS_THAN_INCLUSIVE => nodeValue.compareTo(validation.parameter.head) >= 0
-        case OperationType.IS_EQUAL_TO => nodeValue.equals(validation.parameter.head)
-        case OperationType.IS_NOT_EQUAL_TO => !nodeValue.equals(validation.parameter.head)
-      })
+  def passJudgement(field: Field, validations: Seq[ValidationRule]): Boolean = evaluateValidation(field, validations).validationFailures.isEmpty
+
+  def evaluateValidation(field: Field, validations: Seq[ValidationRule]): FieldValidationResult = {
+    val validationFailures =
+      validations filterNot
+        (ValidationRule => ValidationRule.validationType
+        match {
+
+          case ValidationType.NOT_NULL => field.fieldValue != null
+          case ValidationType.IS_NULL => field.fieldValue == null
+
+          case ValidationType.IS_BLANK => field.fieldValue.isEmpty
+          case ValidationType.IS_NOT_BLANK => field.fieldValue.nonEmpty
+
+          case ValidationType.GREATER_THAN_INCLUSIVE => field.fieldValue.compareTo(ValidationRule.parameter.head) <= 0
+          case ValidationType.LESS_THAN_INCLUSIVE => field.fieldValue.compareTo(ValidationRule.parameter.head) >= 0
+          case ValidationType.IS_EQUAL_TO => field.fieldValue.equals(ValidationRule.parameter.head)
+          case ValidationType.IS_NOT_EQUAL_TO => !field.fieldValue.equals(ValidationRule.parameter.head)
+        })
+
+    println(s"${field.fieldName} , ${field.fieldValue} +  $validationFailures")
+    FieldValidationResult(field, validationFailures)
   }
 
-  private def recorder(validations: Validation*)(fieldNames: String*): Valkyrie = {
+  private def recorder(validations: ValidationRule*)(fieldNames: String*): Valkyrie = {
     if (fieldNames.isEmpty || (fieldNames.size == 1 & fieldNames.head.trim.isEmpty))
       globalValidations ++= validations
     else
-      fieldNames foreach (fieldName => fieldValidationMap.getOrElseUpdate(fieldName, new mutable.ListBuffer[Validation]()) ++= validations)
+      fieldNames foreach (fieldName => fieldValidationMap.getOrElseUpdate(fieldName, new mutable.ListBuffer[ValidationRule]()) ++= validations)
 
     this
   }
 
   // Methods in Step builder
-  def notNull(fieldNames: String*): Valkyrie = recorder(Validation(OperationType.NOT_NULL))(fieldNames: _*)
+  def notNull(fieldNames: String*): Valkyrie = recorder(ValidationRule(ValidationType.NOT_NULL))(fieldNames: _*)
 
-  def isNull(fieldNames: String*): Valkyrie = recorder(Validation(OperationType.IS_NULL))(fieldNames: _*)
+  def isNull(fieldNames: String*): Valkyrie = recorder(ValidationRule(ValidationType.IS_NULL))(fieldNames: _*)
 
-  def isBlank(fieldNames: String*): Valkyrie = recorder(Validation(OperationType.IS_BLANK))(fieldNames: _*)
+  def isBlank(fieldNames: String*): Valkyrie = recorder(ValidationRule(ValidationType.IS_BLANK))(fieldNames: _*)
+
+  def isNotBlank(fieldNames: String*): Valkyrie = recorder(ValidationRule(ValidationType.IS_NOT_BLANK))(fieldNames: _*)
 
   def isBetweenRange(lowerInclusiveRange: String, upperInclusiveRange: String, fieldNames: String*): Valkyrie =
-    recorder(Validation(OperationType.LESS_THAN_INCLUSIVE, lowerInclusiveRange), Validation(OperationType.GREATER_THAN_INCLUSIVE, upperInclusiveRange))(fieldNames: _*)
+    recorder(ValidationRule(ValidationType.LESS_THAN_INCLUSIVE, lowerInclusiveRange), ValidationRule(ValidationType.GREATER_THAN_INCLUSIVE, upperInclusiveRange))(fieldNames: _*)
 
-  def isEqualTo(value: String, fieldName: String): Valkyrie = recorder(Validation(OperationType.IS_EQUAL_TO, value))(fieldName)
+  def isEqualTo(value: String, fieldName: String): Valkyrie = recorder(ValidationRule(ValidationType.IS_EQUAL_TO, value))(fieldName)
 
-  def isNotEqualTo(value: String, fieldName: String): Valkyrie = recorder(Validation(OperationType.IS_NOT_EQUAL_TO, value))(fieldName)
+  def isNotEqualTo(value: String, fieldName: String): Valkyrie = recorder(ValidationRule(ValidationType.IS_NOT_EQUAL_TO, value))(fieldName)
   // Methods in Step builder
 
 
   def build = valkyrieProcessor match {
     case ValkyrieProcessor.JSON => new JsonProcessor(this)
-//    case ValkyrieProcessor.BYTE_ARRAY => new JsonProcessor(this)
+    //    case ValkyrieProcessor.BYTE_ARRAY => new JsonProcessor(this)
   }
 }
-
-
