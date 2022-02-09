@@ -1,20 +1,15 @@
 package processor
 
-import com.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node._
-import com.jayway.jsonpath.internal.JsonContext
 import com.jayway.jsonpath.spi.json.JacksonJsonNodeJsonProvider
 import com.jayway.jsonpath.{Configuration, DocumentContext, JsonPath}
 import core.Valkyrie
-import model.{Field, FieldValidationResult, Outcome, ValidationRule}
+import model.{Field, FieldValidationResult, Outcome}
 
-import java.lang.reflect
 import java.util.concurrent.atomic.AtomicInteger
-import scala.:+
-import scala.annotation.tailrec
 import scala.collection.JavaConversions._
 import scala.collection.mutable
-import scala.collection.mutable.ListBuffer
 
 class JsonProcessor(valkyrie: Valkyrie) {
 
@@ -31,7 +26,7 @@ class JsonProcessor(valkyrie: Valkyrie) {
 
   // TODO .. if global validations present, latch per field validations to global .. Add optimizer so that in a single pass , we run all validations for a specific field [field specific + global]
   // TODO .. try to convert it into tail recursive
-  def nodeToFields(name: String, inputJsonNode: AnyRef, accumulator: mutable.LinearSeq[Field]): Seq[Field] = {
+  def nodeToFields(name: String, inputJsonNode: JsonNode, accumulator: mutable.LinearSeq[Field]): Seq[Field] = {
     inputJsonNode match {
       case arrayNode: ArrayNode => {
         val counter = new AtomicInteger(-1)
@@ -52,71 +47,34 @@ class JsonProcessor(valkyrie: Valkyrie) {
     }
   }
 
-  def getIfValid(json: String): Option[DocumentContext] = {
+  def evaluate(json: String): Boolean = getIfValid(json).isValid
+
+  def getIfValid(json: String): Outcome[DocumentContext] = {
 
     // TODO handle invalid json scenario
-    val document = JsonPath.using(config).parse(json)
-    val children = document.json().asInstanceOf[AnyRef]
-    val allNodes = nodeToFields("$", children, mutable.LinearSeq.empty[Field])
+    val document: DocumentContext = JsonPath.using(config).parse(json)
+    val children = document.json[JsonNode]()
 
-    val globalValidationResult: Boolean = allNodes.forall(field => valkyrie.passJudgement(field, valkyrie.globalValidations))
+    val globalValidationResult: Seq[FieldValidationResult] =
+      if (valkyrie.globalValidations.nonEmpty) {
+        val allNodes = nodeToFields("$", children, mutable.LinearSeq.empty[Field])
+        allNodes.map(field => valkyrie.evaluateValidation(field, valkyrie.globalValidations))
+      }
+      else mutable.Seq.empty
 
-    val perFieldValidationResult: Boolean =
-      valkyrie
-        .fieldValidationMap
-        .forall(x => {
-          val nodesInJsonPath = nodeToFields(x._1, document.read[JsonNode](x._1).asInstanceOf[AnyRef], mutable.LinearSeq.empty[Field]) //  getLeafValues(mutable.Queue(document.read(x._1)), accumulator)
-          nodesInJsonPath.forall(field => valkyrie.passJudgement(field, x._2))
-        })
 
-    if (perFieldValidationResult && globalValidationResult) Option(document) else Option.empty
+    val perFieldValidationResult: Seq[FieldValidationResult] =
+      valkyrie.fieldValidationMap.flatMap(x => {
+        val fields = nodeToFields(x._1, document.read[JsonNode](x._1), mutable.LinearSeq.empty[Field])
+        fields.map(field => valkyrie.evaluateValidation(field, x._2))
+      }).toSeq
+
+    val isGlobalValidationSuccessful = globalValidationResult.forall(_.validationFailures.isEmpty)
+    val isPerFieldValidationSuccessful: Boolean = perFieldValidationResult.forall(_.validationFailures.isEmpty)
+
+    val errors = globalValidationResult ++ perFieldValidationResult filter (_.validationFailures.nonEmpty)
+    val payload = if (errors.isEmpty) Option(document) else Option.empty
+
+    Outcome(isGlobalValidationSuccessful && isPerFieldValidationSuccessful, errors, payload)
   }
-
-  def evaluate(json: String): Boolean = getIfValid(json).isDefined
-
-
-  /* def traceEvaluate(json: String): Outcome[String] = {
-
-     val document = JsonPath.using(config).parse(json)
-
-     val cartographer =
-       JsonPath
-         .using(config.addOptions(com.jayway.jsonpath.Option.AS_PATH_LIST))
-         .parse(json)
-         .read("$..*").asInstanceOf[JsonNode]
-         .elements()
-
-     def getPathAndValueIfLeafNode(path: String): Option[Field] =
-       document.read(path).asInstanceOf[AnyRef] match {
-         case nullNode: NullNode => println(Field(path, null)); Option(Field(path, null))
-         case valueNode: ValueNode => Option(Field(path, valueNode.asText))
-         case _ => Option.empty
-       }
-
-     val globalValidationOutcome: Seq[FieldValidationResult] =
-       cartographer
-         .map(_.asText)
-         .map(getPathAndValueIfLeafNode)
-         .filter(_.isDefined)
-         .map(_.get)
-         .map(valkyrie.evaluateValidation(_, valkyrie.globalValidations))
-         .toSeq
-
-     val globalValidationResult: Boolean = globalValidationOutcome.forall(x => x.validationFailures.isEmpty)
-
-
-     val perFieldValidationOutcome: Seq[FieldValidationResult] = valkyrie.fieldValidationMap.map(x => valkyrie.evaluateValidation(Field(x._1, getVal(document, x)), x._2)).toSeq
-     val perFieldValidationResult: Boolean = perFieldValidationOutcome.forall(x => x.validationFailures.isEmpty)
-
-     val errors = globalValidationOutcome ++ perFieldValidationOutcome filter (_.validationFailures.nonEmpty)
-
-     Outcome(globalValidationResult && perFieldValidationResult, errors, json)
-   }
-
-   private def getVal(document: DocumentContext, x: (String, ListBuffer[ValidationRule])) = {
-     val a = document.read(x._1)
-     println(a)
-     a
-   }*/
 }
-//  def getValue
